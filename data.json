@@ -1,0 +1,33 @@
+{
+  "devices": {
+    "fabriq-alice-mba": {
+      "fabriqUser": "alice@mock-fabriq.tech",
+      "macosUsername": "alice"
+    },
+    "fabriq-bob-mba": {
+      "fabriqUser": "bob@mock-fabriq.tech",
+      "macosUsername": "bob"
+    },
+    "fabriq-chloe-mbp": {
+      "fabriqUser": "chloe@mock-chloe.tech",
+      "macosUsername": "chloe"
+    }
+  },
+  "users": {
+    "alice@mock-fabriq.tech": {
+      "fullName": "Alice Arnold",
+      "githubUsername": "alicearnold",
+      "githubId": 123456
+    },
+    "bob@mock-fabriq.tech": {
+      "fullName": "Bob Bertwig",
+      "githubUsername": "bobbertwig",
+      "githubId": 234567
+    },
+    "chloe@mock-fabriq.tech": {
+      "fullName": "Chloe Carmichael",
+      "githubUsername": "chloecarmichael",
+      "githubId": 345678
+    }
+  }
+}

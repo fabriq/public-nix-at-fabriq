@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+# These are convenience scripts. Ideally, they should not exist, as issues
+# should be sorted out upstream or automated by Kandji.
+
+function backup_if_regular_file() {
+	if sudo test -f $1; then
+		sudo mv $1 $1.backup-before-nix-at-fabriq
+	fi
+}
+
+# Command to install the configuration for the first time.
+function bootstrap() {
+	sudo echo >/dev/null || exit 1
+
+	set -ex
+
+	# Backup the files that will be linked by Nix
+	backup_if_regular_file /etc/bashrc
+	backup_if_regular_file /etc/zshrc
+	backup_if_regular_file /etc/nix/nix.conf
+
+	# This is needed because Kandji only sets the computer name and does not
+	# reflect that for the hostnames, but we need this for flakes.
+	sudo scutil --set HostName $(sudo scutil --get ComputerName)
+	sudo scutil --set LocalHostName $(sudo scutil --get ComputerName)
+
+	# Nix build needs HTTPS, but calls will fail as it doesn't have any
+	# certificate bundle. This command extracts the system one into a file.
+	export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+	backup_if_regular_file $NIX_SSL_CERT_FILE
+	sudo rm -f $NIX_SSL_CERT_FILE
+	bash ./system_modules/casync/caexport.sh \
+		"/Library/Keychains/System.keychain" "/System/Library/Keychains/SystemRootCertificates.keychain" |
+		sudo tee $NIX_SSL_CERT_FILE >/dev/null
+
+	# Builds nix-darwin
+	DIR=$(mktemp -d)
+	nix build ".#darwinConfigurations.$(hostname).system" --extra-experimental-features "nix-command flakes" -o $DIR/result
+
+	# According to nix-darwin's documentation, this needs to be set manually;
+	# it is a mystery as to why.
+	printf 'run\tprivate/var/run\nnix\n' | sudo tee /etc/synthetic.conf
+	# We need to ignore the exit code from apfs.util because it'll give 253 even
+	# when it succeeds. See https://github.com/LnL7/nix-darwin/pull/402.
+	sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
+	if ! test -L /run; then
+		echo "error: apfs.util failed to symlink /run"
+		exit 1
+	fi
+	if ! test -d /nix; then
+		echo "error: apfs.util failed to setup /nix"
+		exit 1
+	fi
+
+	# First time building the system with nix-darwin
+	$DIR/result/sw/bin/darwin-rebuild switch --flake .
+
+	# Cleaning up temporary directory
+	rm -rf $DIR
+}
+
+# The normal command is a bit verbose. Ideal solution: distribute a package that
+# does this, instead of being a local script.
+function rebuild() {
+	set -e
+	if ! command -v casync &>/dev/null; then
+		darwin-rebuild switch --flake . "$@"
+		sudo casync
+	else
+		sudo casync
+		darwin-rebuild switch --flake . "$@"
+	fi
+}
+
+function uninstall() {
+	sudo echo >/dev/null || exit 1
+
+	set -x
+
+	# Killing socat because it relies on Nix
+	sudo launchctl unload /Library/LaunchDaemons/org.nixos.local-domain.socat.plist
+
+	# Stopping Nix daemon
+	sudo launchctl unload /Library/LaunchDaemons/org.nixos.nix-daemon.plist
+	sudo launchctl unload /Library/LaunchDaemons/org.nixos.darwin-store.plist
+	sudo rm /Library/LaunchDaemons/org.nixos.nix-daemon.plist
+	sudo rm /Library/LaunchDaemons/org.nixos.darwin-store.plist
+
+	# Removing Nix-altered files
+	sudo rm -rf /etc/zshrc.backup-before-* /etc/zshrc /etc/bashrc.backup-before-* /etc/bashrc /etc/bash.bashrc.backup-before-* /etc/bash.bashrc
+	sudo mv /etc/zshrc.orig /etc/zshrc
+	sudo mv /etc/bashrc.orig /etc/bashrc
+
+	# Removing Nix groups and users
+	sudo dscl . -delete /Groups/nixbld
+	for u in $(sudo dscl . -list /Users | grep _nixbld); do sudo dscl . -delete /Users/$u; done
+
+	# Remove Nix volume from fstab
+	sudo sed '/nix apfs /d' /etc/fstab | sed '/# nix-installer/d' >/tmp/fstab
+	cat /tmp/fstab | sudo tee /etc/fstab >/dev/null
+	rm /tmp/fstab
+
+	# Remove Nix from synthetic.conf
+	sudo sed '/^nix$/d' /etc/synthetic.conf >/tmp/synthetic.conf
+	cat /tmp/synthetic.conf | sudo tee /etc/synthetic.conf >/dev/null
+	rm /tmp/synthetic.conf
+
+	sudo rm -rf /etc/nix /var/root/.nix-profile /var/root/.nix-defexpr /var/root/.nix-channels ~/.nix-profile ~/.nix-defexpr ~/.nix-channels
+
+	# Remove Nix volume
+	sudo diskutil apfs deleteVolume disk3s7
+	sudo security delete-generic-password -a "Nix Store" -s "Nix Store" -l "disk3 encryption password" -D "Encrypted volume password"
+}
+
+# runs the command passed as first argument, passing to it all other arguments
+cmd=$1
+shift
+$cmd $@
